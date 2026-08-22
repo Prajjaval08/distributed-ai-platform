@@ -10,6 +10,7 @@ import java.util.UUID;
 
 @Entity
 @Table(name = "idempotency_keys")
+@IdClass(IdempotencyKeyId.class)
 @Getter
 @Setter
 @NoArgsConstructor
@@ -19,6 +20,7 @@ public class IdempotencyKey {
     @Column(name = "key")
     private String key;
 
+    @Id
     @Column(name = "user_id", nullable = false)
     private UUID userId;
 
