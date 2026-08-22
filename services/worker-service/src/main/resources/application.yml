@@ -1,0 +1,33 @@
+﻿spring:
+  application:
+    name: worker-service
+  datasource:
+    url: jdbc:postgresql://localhost:5432/ai_platform
+    username: ai_platform_user
+    password: ${POSTGRES_PASSWORD:devpassword}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    show-sql: false
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+
+kafka-topics:
+  ai-jobs: ${KAFKA_TOPIC_AI_JOBS:ai-jobs}
+
+ai:
+  provider:
+    type: ${AI_PROVIDER_TYPE:mock}
+
+object-storage:
+  endpoint: ${OBJECT_STORAGE_ENDPOINT:http://localhost:9000}
+  bucket: ${OBJECT_STORAGE_BUCKET:ai-platform-artifacts}
+  access-key: ${OBJECT_STORAGE_ACCESS_KEY:minioadmin}
+  secret-key: ${OBJECT_STORAGE_SECRET_KEY:minioadmin}
+  region: ${OBJECT_STORAGE_REGION:us-east-1}
+  presigned-url-expiry-seconds: ${OBJECT_STORAGE_PRESIGNED_EXPIRY_SECONDS:604800}
+
+server:
+  port: 8081
