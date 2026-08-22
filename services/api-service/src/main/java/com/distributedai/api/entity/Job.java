@@ -1,5 +1,7 @@
 package com.distributedai.api.entity;
-
+import io.hypersistence.utils.hibernate.type.json.JsonType;
+import org.hibernate.annotations.Type;
+import java.util.Map;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -55,6 +57,9 @@ public class Job {
 
     @Column(name = "completed_at")
     private LocalDateTime completedAt;
+        @Type(JsonType.class)
+    @Column(columnDefinition = "jsonb")
+    private Map<String, Object> parameters;
 
     @PrePersist
     public void prePersist() {

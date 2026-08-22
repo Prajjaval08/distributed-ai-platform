@@ -41,4 +41,21 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(ErrorResponse.of("INTERNAL_ERROR", "An unexpected error occurred"));
     }
+        @ExceptionHandler(JobNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleJobNotFound(JobNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(ErrorResponse.of("JOB_NOT_FOUND", ex.getMessage()));
+    }
+
+    @ExceptionHandler(JobNotCancellableException.class)
+    public ResponseEntity<ErrorResponse> handleJobNotCancellable(JobNotCancellableException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(ErrorResponse.of("JOB_NOT_CANCELLABLE", ex.getMessage()));
+    }
+
+    @ExceptionHandler(JobResultNotReadyException.class)
+    public ResponseEntity<ErrorResponse> handleResultNotReady(JobResultNotReadyException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(ErrorResponse.of("RESULT_NOT_READY", ex.getMessage()));
+    }
 }
