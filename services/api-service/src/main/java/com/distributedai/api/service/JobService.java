@@ -12,6 +12,8 @@ import com.distributedai.api.exception.JobNotCancellableException;
 import com.distributedai.api.exception.JobNotFoundException;
 import com.distributedai.api.exception.JobNotProcessableException;
 import com.distributedai.api.exception.JobResultNotReadyException;
+import com.distributedai.api.kafka.JobMessage;
+import com.distributedai.api.kafka.JobProducer;
 import com.distributedai.api.repository.JobEventRepository;
 import com.distributedai.api.repository.JobRepository;
 import com.distributedai.api.storage.ObjectStorage;
@@ -31,17 +33,20 @@ public class JobService {
     private final JobEventRepository jobEventRepository;
     private final AiProvider aiProvider;
     private final ObjectStorage objectStorage;
+    private final JobProducer jobProducer;
 
     public JobService(
             JobRepository jobRepository,
             JobEventRepository jobEventRepository,
             AiProvider aiProvider,
-            ObjectStorage objectStorage
+            ObjectStorage objectStorage,
+            JobProducer jobProducer
     ) {
         this.jobRepository = jobRepository;
         this.jobEventRepository = jobEventRepository;
         this.aiProvider = aiProvider;
         this.objectStorage = objectStorage;
+        this.jobProducer = jobProducer;
     }
 
     @Transactional
@@ -52,18 +57,33 @@ public class JobService {
         job.setModel(request.model());
         job.setParameters(request.parameters());
         job.setPriority(parsePriority(request.priority()));
-
         // status defaults to CREATED via @PrePersist
-        // NOTE: does not transition to QUEUED here - that requires Kafka.
 
         Job saved = jobRepository.save(job);
-
         recordEvent(saved.getId(), "CREATED", Map.of(
                 "model", saved.getModel(),
                 "priority", saved.getPriority().name()
         ));
 
-        return saved;
+        // Publish to Kafka, then transition CREATED -> QUEUED. If publish
+        // throws, JobPublishException propagates and @Transactional rolls
+        // back the entire method - including the CREATED row and its event.
+        // See Phase 6 Design Decisions: this fails the whole request rather
+        // than leaving an orphaned CREATED job when Kafka is unavailable.
+        jobProducer.publish(new JobMessage(
+                saved.getId(),
+                saved.getUserId(),
+                saved.getPrompt(),
+                saved.getModel(),
+                saved.getPriority().name(),
+                saved.getParameters()
+        ));
+
+        saved.setStatus(JobStatus.QUEUED);
+        Job queued = jobRepository.save(saved);
+        recordEvent(queued.getId(), "QUEUED", Map.of());
+
+        return queued;
     }
 
     @Transactional(readOnly = true)
@@ -81,20 +101,18 @@ public class JobService {
     public Job cancelJob(UUID userId, UUID jobId) {
         Job job = getJob(userId, jobId);
 
-        // Only CREATED is cancellable right now.
-        if (job.getStatus() != JobStatus.CREATED) {
+        // CREATED and QUEUED are both cancellable (Appendix A: "cancel
+        // before processing"). PROCESSING and beyond are not yet reachable
+        // guards here - Phase 7 will need to reconsider this once workers
+        // exist and PROCESSING becomes real.
+        if (job.getStatus() != JobStatus.CREATED && job.getStatus() != JobStatus.QUEUED) {
             throw new JobNotCancellableException(job.getStatus().name());
         }
 
+        String previousStatus = job.getStatus().name();
         job.setStatus(JobStatus.CANCELLED);
-
         Job saved = jobRepository.save(job);
-
-        recordEvent(
-                saved.getId(),
-                "CANCELLED",
-                Map.of("previousStatus", "CREATED")
-        );
+        recordEvent(saved.getId(), "CANCELLED", Map.of("previousStatus", previousStatus));
 
         return saved;
     }
@@ -113,139 +131,77 @@ public class JobService {
     /**
      * TEMPORARY - Phase 5 only.
      *
-     * Synchronously processes a CREATED job through:
+     * Synchronously processes a QUEUED job through:
      *
-     * CREATED
-     *    ↓
+     * QUEUED
+     *    ->
      * PROCESSING
-     *    ↓
+     *    ->
      * AI generation
-     *    ↓
+     *    ->
      * Object storage upload
-     *    ↓
+     *    ->
      * COMPLETED / FAILED
      *
      * This will be removed once Kafka + worker-service
-     * handle asynchronous processing.
+     * handle asynchronous processing (Phase 7).
      */
     @Transactional
     public Job processJobManually(UUID userId, UUID jobId) {
-
         Job job = getJob(userId, jobId);
 
-        // Only CREATED jobs can be manually processed.
-        if (job.getStatus() != JobStatus.CREATED) {
-            throw new JobNotProcessableException(
-                    job.getStatus().name()
-            );
+        if (job.getStatus() != JobStatus.QUEUED) {
+            throw new JobNotProcessableException(job.getStatus().name());
         }
 
-        // CREATED -> PROCESSING
         job.setStatus(JobStatus.PROCESSING);
         job.setStartedAt(LocalDateTime.now());
-
         jobRepository.save(job);
-
-        recordEvent(
-                job.getId(),
-                "PROCESSING",
-                Map.of()
-        );
+        recordEvent(job.getId(), "PROCESSING", Map.of());
 
         try {
-
-            // Call AI provider
             AiGenerationResult result = aiProvider.generate(
-                    new AiGenerationRequest(
-                            job.getPrompt(),
-                            job.getModel(),
-                            job.getParameters()
-                    )
-            );
+                    new AiGenerationRequest(job.getPrompt(), job.getModel(), job.getParameters()));
 
-            // Upload generated result to object storage
-            String key = "jobs/"
-                    + job.getId()
-                    + "/result.png";
+            String key = "jobs/" + job.getId() + "/result.png";
+            String resultUrl = objectStorage.upload(key, result.data(), result.contentType());
 
-            String resultUrl = objectStorage.upload(
-                    key,
-                    result.data(),
-                    result.contentType()
-            );
-
-            // PROCESSING -> COMPLETED
             job.setStatus(JobStatus.COMPLETED);
             job.setResultUrl(resultUrl);
             job.setCompletedAt(LocalDateTime.now());
-
             Job saved = jobRepository.save(job);
-
-            recordEvent(
-                    saved.getId(),
-                    "COMPLETED",
-                    Map.of(
-                            "resultUrl",
-                            resultUrl
-                    )
-            );
-
+            recordEvent(saved.getId(), "COMPLETED", Map.of("resultUrl", resultUrl));
             return saved;
 
         } catch (Exception ex) {
-
-            // Any error is terminal for now.
-            // Retry logic will be introduced later.
-
             job.setStatus(JobStatus.FAILED);
             job.setErrorCode("INTERNAL_ERROR");
             job.setErrorMessage(ex.getMessage());
             job.setCompletedAt(LocalDateTime.now());
-
             Job saved = jobRepository.save(job);
-
-            recordEvent(
-                    saved.getId(),
-                    "FAILED",
-                    Map.of(
-                            "errorMessage",
-                            String.valueOf(ex.getMessage())
-                    )
-            );
-
+            recordEvent(saved.getId(), "FAILED", Map.of(
+                    "errorMessage", String.valueOf(ex.getMessage())
+            ));
             return saved;
         }
     }
 
     private JobPriority parsePriority(String rawPriority) {
-
         if (rawPriority == null || rawPriority.isBlank()) {
             return JobPriority.NORMAL;
         }
-
         try {
-            return JobPriority.valueOf(
-                    rawPriority.toUpperCase()
-            );
-
+            return JobPriority.valueOf(rawPriority.toUpperCase());
         } catch (IllegalArgumentException ex) {
-
             return JobPriority.NORMAL;
         }
     }
 
-    private void recordEvent(
-            UUID jobId,
-            String eventType,
-            Map<String, Object> metadata
-    ) {
-
+    private void recordEvent(UUID jobId, String eventType, Map<String, Object> metadata) {
         JobEvent event = new JobEvent();
-
         event.setJobId(jobId);
         event.setEventType(eventType);
         event.setMetadata(metadata);
-
         jobEventRepository.save(event);
     }
 }

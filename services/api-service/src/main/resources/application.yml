@@ -1,4 +1,4 @@
-ai:
+﻿ai:
   provider:
     type: ${AI_PROVIDER_TYPE:mock}
     api-key: ${AI_PROVIDER_API_KEY:}
@@ -12,7 +12,10 @@ object-storage:
   secret-key: ${OBJECT_STORAGE_SECRET_KEY:minioadmin}
   region: ${OBJECT_STORAGE_REGION:us-east-1}
   presigned-url-expiry-seconds: ${OBJECT_STORAGE_PRESIGNED_EXPIRY_SECONDS:604800}
-  
+
+kafka-topics:
+  ai-jobs: ${KAFKA_TOPIC_AI_JOBS:ai-jobs}
+
 spring:
   application:
     name: api-service
@@ -33,6 +36,13 @@ spring:
     enabled: true
     locations: classpath:db/migration
     baseline-on-migrate: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      acks: all
+      retries: 3
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
 
 jwt:
   secret: ${JWT_SECRET:local-dev-only-secret-please-change-me-32chars-min}
