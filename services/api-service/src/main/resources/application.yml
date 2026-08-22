@@ -1,13 +1,11 @@
 spring:
   application:
     name: api-service
-
   datasource:
     url: jdbc:postgresql://localhost:5432/ai_platform
     username: ai_platform_user
     password: ${POSTGRES_PASSWORD:devpassword}
     driver-class-name: org.postgresql.Driver
-
   jpa:
     hibernate:
       ddl-auto: validate
@@ -16,11 +14,14 @@ spring:
       hibernate:
         format_sql: true
     show-sql: false
-
   flyway:
     enabled: true
     locations: classpath:db/migration
     baseline-on-migrate: true
+
+jwt:
+  secret: ${JWT_SECRET:local-dev-only-secret-please-change-me-32chars-min}
+  expiration-ms: ${JWT_EXPIRATION_MS:900000}
 
 server:
   port: 8080
