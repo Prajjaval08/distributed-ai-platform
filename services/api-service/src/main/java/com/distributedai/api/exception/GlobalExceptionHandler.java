@@ -52,6 +52,11 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(ErrorResponse.of("JOB_NOT_CANCELLABLE", ex.getMessage()));
     }
+        @ExceptionHandler(JobNotProcessableException.class)
+    public ResponseEntity<ErrorResponse> handleJobNotProcessable(JobNotProcessableException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(ErrorResponse.of("JOB_NOT_PROCESSABLE", ex.getMessage()));
+    }
 
     @ExceptionHandler(JobResultNotReadyException.class)
     public ResponseEntity<ErrorResponse> handleResultNotReady(JobResultNotReadyException ex) {

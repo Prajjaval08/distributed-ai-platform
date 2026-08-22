@@ -54,6 +54,15 @@ public class JobController {
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         return jobService.listJobs(userId, pageable).map(JobResponse::from);
     }
+        // TEMPORARY - Phase 5 only, removed in Phase 7 once the real worker
+    // consumes jobs asynchronously via Kafka. Exists purely to let us
+    // verify AiProvider + ObjectStorage + the job state machine together.
+    @PostMapping("/{id}/process")
+    public JobResponse processJob(@PathVariable("id") UUID jobId, Authentication authentication) {
+        UUID userId = currentUserId(authentication);
+        Job job = jobService.processJobManually(userId, jobId);
+        return JobResponse.from(job);
+    }
 
     @PostMapping("/{id}/cancel")
     public JobResponse cancelJob(@PathVariable("id") UUID jobId, Authentication authentication) {

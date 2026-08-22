@@ -1,3 +1,18 @@
+ai:
+  provider:
+    type: ${AI_PROVIDER_TYPE:mock}
+    api-key: ${AI_PROVIDER_API_KEY:}
+    url: ${AI_PROVIDER_URL:https://api.openai.com/v1}
+    default-model: ${AI_PROVIDER_MODEL:dall-e-3}
+
+object-storage:
+  endpoint: ${OBJECT_STORAGE_ENDPOINT:http://localhost:9000}
+  bucket: ${OBJECT_STORAGE_BUCKET:ai-platform-artifacts}
+  access-key: ${OBJECT_STORAGE_ACCESS_KEY:minioadmin}
+  secret-key: ${OBJECT_STORAGE_SECRET_KEY:minioadmin}
+  region: ${OBJECT_STORAGE_REGION:us-east-1}
+  presigned-url-expiry-seconds: ${OBJECT_STORAGE_PRESIGNED_EXPIRY_SECONDS:604800}
+  
 spring:
   application:
     name: api-service
