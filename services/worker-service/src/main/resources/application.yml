@@ -1,4 +1,4 @@
-﻿spring:
+spring:
   application:
     name: worker-service
   datasource:
@@ -16,6 +16,13 @@
 
 kafka-topics:
   ai-jobs: ${KAFKA_TOPIC_AI_JOBS:ai-jobs}
+  ai-jobs-dlq: ${KAFKA_TOPIC_AI_JOBS_DLQ:ai-jobs-dlq}
+
+retry:
+  max-attempts: 3
+  base-delay-ms: 2000
+  max-delay-ms: 10000
+  jitter-factor: 0.2
 
 ai:
   provider:

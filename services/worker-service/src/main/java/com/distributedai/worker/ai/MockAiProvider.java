@@ -1,5 +1,6 @@
 package com.distributedai.worker.ai;
 
+import com.distributedai.worker.service.FailureCategory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
@@ -15,6 +16,10 @@ public class MockAiProvider implements AiProvider {
 
     @Override
     public AiGenerationResult generate(AiGenerationRequest request) {
+        if ("FORCE_FAIL".equals(request.prompt())) {
+            throw new AiProviderException("Simulated failure for testing", FailureCategory.DEPENDENCY);
+        }
+
         try {
             int width = 512;
             int height = 512;
@@ -32,7 +37,7 @@ public class MockAiProvider implements AiProvider {
             ImageIO.write(image, "png", baos);
             return new AiGenerationResult(baos.toByteArray(), "image/png");
         } catch (IOException ex) {
-            throw new AiProviderException("Mock provider failed to generate image", ex);
+            throw new AiProviderException("Mock provider failed to generate image", FailureCategory.INTERNAL, ex);
         }
     }
 

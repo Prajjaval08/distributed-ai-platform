@@ -1,5 +1,6 @@
 package com.distributedai.worker.storage;
 
+import com.distributedai.worker.service.FailureCategory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
@@ -73,7 +74,7 @@ public class S3ObjectStorage implements ObjectStorage {
             return presigner.presignGetObject(presignRequest).url().toString();
 
         } catch (Exception ex) {
-            throw new ObjectStorageException("Failed to upload object with key: " + key, ex);
+            throw new ObjectStorageException("Failed to upload object with key: " + key, FailureCategory.DEPENDENCY, ex);
         }
     }
 }

@@ -6,12 +6,15 @@ import com.distributedai.worker.ai.AiProvider;
 import com.distributedai.worker.entity.Job;
 import com.distributedai.worker.entity.JobEvent;
 import com.distributedai.worker.entity.JobStatus;
+import com.distributedai.worker.kafka.DlqMessage;
+import com.distributedai.worker.kafka.DlqProducer;
 import com.distributedai.worker.kafka.JobMessage;
 import com.distributedai.worker.repository.JobEventRepository;
 import com.distributedai.worker.repository.JobRepository;
 import com.distributedai.worker.storage.ObjectStorage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -29,76 +32,153 @@ public class JobProcessingService {
     private final JobEventRepository jobEventRepository;
     private final AiProvider aiProvider;
     private final ObjectStorage objectStorage;
+    private final DlqProducer dlqProducer;
+    private final BackoffCalculator backoffCalculator;
+    private final int maxAttempts;
 
     public JobProcessingService(
             JobRepository jobRepository,
             JobEventRepository jobEventRepository,
             AiProvider aiProvider,
-            ObjectStorage objectStorage
+            ObjectStorage objectStorage,
+            DlqProducer dlqProducer,
+            BackoffCalculator backoffCalculator,
+            @Value("${retry.max-attempts}") int maxAttempts
     ) {
         this.jobRepository = jobRepository;
         this.jobEventRepository = jobEventRepository;
         this.aiProvider = aiProvider;
         this.objectStorage = objectStorage;
+        this.dlqProducer = dlqProducer;
+        this.backoffCalculator = backoffCalculator;
+        this.maxAttempts = maxAttempts;
     }
 
-    @Transactional
     public void process(JobMessage message) {
         Optional<Job> maybeJob = jobRepository.findById(message.jobId());
-
         if (maybeJob.isEmpty()) {
-            // Job row missing entirely - log and move on rather than crash
-            // the consumer. Real classification/DLQ handling is Phase 8.
             log.warn("Received message for unknown jobId={}, skipping", message.jobId());
             return;
         }
 
         Job job = maybeJob.get();
-
-        // Job-state guard (Section 13): only act on QUEUED jobs. This is
-        // what makes Kafka's at-least-once redelivery safe - a redelivered
-        // message for an already-PROCESSING/COMPLETED job is a no-op here,
-        // not a duplicate side effect.
         if (job.getStatus() != JobStatus.QUEUED) {
             log.info("Job {} is not QUEUED (status={}), skipping - likely a redelivery", job.getId(), job.getStatus());
             return;
         }
 
+        markProcessing(job);
+        attemptWithRetries(job, message);
+    }
+
+    private void attemptWithRetries(Job job, JobMessage message) {
+        int attempt = 0;
+
+        while (true) {
+            attempt++;
+            try {
+                AiGenerationResult result = aiProvider.generate(
+                        new AiGenerationRequest(job.getPrompt(), job.getModel(), job.getParameters()));
+
+                String key = "jobs/" + job.getId() + "/result.png";
+                String resultUrl = objectStorage.upload(key, result.data(), result.contentType());
+
+                markCompleted(job, resultUrl);
+                log.info("Job {} completed successfully on attempt {}", job.getId(), attempt);
+                return;
+
+            } catch (Exception ex) {
+                FailureCategory category = FailureClassifier.classify(ex);
+                log.warn("Job {} failed on attempt {} ({}): {}", job.getId(), attempt, category, ex.getMessage());
+
+                boolean retryable = FailureClassifier.isRetryable(category);
+                boolean attemptsRemain = attempt < maxAttempts;
+
+                if (retryable && attemptsRemain) {
+                    incrementRetryCount(job);
+                    long delay = backoffCalculator.delayMillis(attempt);
+                    recordEvent(job.getId(), "RETRY", Map.of(
+                            "attempt", attempt,
+                            "category", category.name(),
+                            "delayMs", delay,
+                            "errorMessage", String.valueOf(ex.getMessage())
+                    ));
+                    sleep(delay);
+                    continue; // retry
+                }
+
+                // Not retryable, or retries exhausted: terminal FAILED + DLQ
+                markFailed(job, category, ex.getMessage());
+                publishToDlq(job, message, category, ex.getMessage());
+                return;
+            }
+        }
+    }
+
+    private void markProcessing(Job job) {
         job.setStatus(JobStatus.PROCESSING);
         job.setStartedAt(LocalDateTime.now());
         jobRepository.save(job);
         recordEvent(job.getId(), "PROCESSING", Map.of());
+    }
 
+    private void markCompleted(Job job, String resultUrl) {
+        job.setStatus(JobStatus.COMPLETED);
+        job.setResultUrl(resultUrl);
+        job.setCompletedAt(LocalDateTime.now());
+        jobRepository.save(job);
+        recordEvent(job.getId(), "COMPLETED", Map.of("resultUrl", resultUrl));
+    }
+
+    private void markFailed(Job job, FailureCategory category, String errorMessage) {
+        job.setStatus(JobStatus.FAILED);
+        job.setErrorCode(category.name());
+        job.setErrorMessage(errorMessage);
+        job.setCompletedAt(LocalDateTime.now());
+        jobRepository.save(job);
+        recordEvent(job.getId(), "FAILED", Map.of(
+                "category", category.name(),
+                "errorMessage", String.valueOf(errorMessage),
+                "retryCount", job.getRetryCount()
+        ));
+        log.error("Job {} FAILED permanently ({}), retryCount={}: {}",
+                job.getId(), category, job.getRetryCount(), errorMessage);
+    }
+
+    private void incrementRetryCount(Job job) {
+        job.setRetryCount(job.getRetryCount() + 1);
+        jobRepository.save(job);
+    }
+
+    private void publishToDlq(Job job, JobMessage message, FailureCategory category, String errorMessage) {
         try {
-            AiGenerationResult result = aiProvider.generate(
-                    new AiGenerationRequest(job.getPrompt(), job.getModel(), job.getParameters()));
-
-            String key = "jobs/" + job.getId() + "/result.png";
-            String resultUrl = objectStorage.upload(key, result.data(), result.contentType());
-
-            job.setStatus(JobStatus.COMPLETED);
-            job.setResultUrl(resultUrl);
-            job.setCompletedAt(LocalDateTime.now());
-            jobRepository.save(job);
-            recordEvent(job.getId(), "COMPLETED", Map.of("resultUrl", resultUrl));
-
-            log.info("Job {} completed successfully", job.getId());
-
-        } catch (Exception ex) {
-            // No retry/DLQ classification yet - Phase 8. Any failure is
-            // currently terminal.
-            job.setStatus(JobStatus.FAILED);
-            job.setErrorCode("INTERNAL_ERROR");
-            job.setErrorMessage(ex.getMessage());
-            job.setCompletedAt(LocalDateTime.now());
-            jobRepository.save(job);
-            recordEvent(job.getId(), "FAILED", Map.of("errorMessage", String.valueOf(ex.getMessage())));
-
-            log.error("Job {} failed: {}", job.getId(), ex.getMessage());
+            dlqProducer.publish(new DlqMessage(
+                    job.getId(),
+                    message.userId(),
+                    job.getPrompt(),
+                    job.getModel(),
+                    category.name(),
+                    job.getRetryCount(),
+                    String.valueOf(errorMessage)
+            ));
+            recordEvent(job.getId(), "DLQ", Map.of("category", category.name()));
+        } catch (Exception dlqEx) {
+            // Job is already durably FAILED in PostgreSQL - a DLQ publish
+            // failure is logged but does not change the job's outcome.
+            log.error("Failed to publish job {} to DLQ: {}", job.getId(), dlqEx.getMessage());
         }
     }
 
-    private void recordEvent(UUID jobId, String eventType, Map<String, Object> metadata) {
+    private void sleep(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    @Transactional
+    protected void recordEvent(UUID jobId, String eventType, Map<String, Object> metadata) {
         JobEvent event = new JobEvent();
         event.setJobId(jobId);
         event.setEventType(eventType);
