@@ -1,25 +1,30 @@
 package com.distributedai.api.service;
 
-import com.distributedai.api.ai.AiProvider;
 import com.distributedai.api.dto.CreateJobRequest;
+import com.distributedai.api.dto.JobResponse;
+import com.distributedai.api.entity.IdempotencyKey;
 import com.distributedai.api.entity.Job;
 import com.distributedai.api.entity.JobEvent;
 import com.distributedai.api.entity.JobPriority;
 import com.distributedai.api.entity.JobStatus;
+import com.distributedai.api.exception.DuplicateIdempotencyKeyException;
 import com.distributedai.api.exception.JobNotCancellableException;
 import com.distributedai.api.exception.JobNotFoundException;
 import com.distributedai.api.exception.JobResultNotReadyException;
 import com.distributedai.api.kafka.JobMessage;
 import com.distributedai.api.kafka.JobProducer;
+import com.distributedai.api.repository.IdempotencyKeyRepository;
 import com.distributedai.api.repository.JobEventRepository;
 import com.distributedai.api.repository.JobRepository;
-import com.distributedai.api.storage.ObjectStorage;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -27,26 +32,36 @@ public class JobService {
 
     private final JobRepository jobRepository;
     private final JobEventRepository jobEventRepository;
-    private final AiProvider aiProvider;
-    private final ObjectStorage objectStorage;
     private final JobProducer jobProducer;
+    private final JobCacheService jobCacheService;
+    private final IdempotencyKeyRepository idempotencyKeyRepository;
 
     public JobService(
             JobRepository jobRepository,
             JobEventRepository jobEventRepository,
-            AiProvider aiProvider,
-            ObjectStorage objectStorage,
-            JobProducer jobProducer
+            JobProducer jobProducer,
+            JobCacheService jobCacheService,
+            IdempotencyKeyRepository idempotencyKeyRepository
     ) {
         this.jobRepository = jobRepository;
         this.jobEventRepository = jobEventRepository;
-        this.aiProvider = aiProvider;
-        this.objectStorage = objectStorage;
         this.jobProducer = jobProducer;
+        this.jobCacheService = jobCacheService;
+        this.idempotencyKeyRepository = idempotencyKeyRepository;
     }
 
     @Transactional
-    public Job createJob(UUID userId, CreateJobRequest request) {
+    public Job createJob(UUID userId, CreateJobRequest request, String idempotencyKey) {
+
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+            Optional<IdempotencyKey> existing =
+                    idempotencyKeyRepository.findByKeyAndUserId(idempotencyKey, userId);
+            if (existing.isPresent()) {
+                return jobRepository.findById(existing.get().getJobId())
+                        .orElseThrow(JobNotFoundException::new);
+            }
+        }
+
         Job job = new Job();
         job.setUserId(userId);
         job.setPrompt(request.prompt());
@@ -55,11 +70,23 @@ public class JobService {
         job.setPriority(parsePriority(request.priority()));
 
         Job saved = jobRepository.save(job);
-
         recordEvent(saved.getId(), "CREATED", Map.of(
                 "model", saved.getModel(),
                 "priority", saved.getPriority().name()
         ));
+
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+            try {
+                IdempotencyKey record = new IdempotencyKey();
+                record.setKey(idempotencyKey);
+                record.setUserId(userId);
+                record.setJobId(saved.getId());
+                record.setExpiresAt(LocalDateTime.now().plusHours(24));
+                idempotencyKeyRepository.save(record);
+            } catch (DataIntegrityViolationException dup) {
+                throw new DuplicateIdempotencyKeyException(saved.getId());
+            }
+        }
 
         jobProducer.publish(new JobMessage(
                 saved.getId(),
@@ -72,10 +99,8 @@ public class JobService {
 
         saved.setStatus(JobStatus.QUEUED);
         Job queued = jobRepository.save(saved);
-
         recordEvent(queued.getId(), "QUEUED", Map.of());
 
-        // Do not cache newly created/queued jobs.
         return queued;
     }
 
@@ -94,19 +119,16 @@ public class JobService {
     public Job cancelJob(UUID userId, UUID jobId) {
         Job job = getJob(userId, jobId);
 
-        if (job.getStatus() != JobStatus.CREATED
-                && job.getStatus() != JobStatus.QUEUED) {
+        if (job.getStatus() != JobStatus.CREATED && job.getStatus() != JobStatus.QUEUED) {
             throw new JobNotCancellableException(job.getStatus().name());
         }
 
         String previousStatus = job.getStatus().name();
-
         job.setStatus(JobStatus.CANCELLED);
         Job saved = jobRepository.save(job);
+        recordEvent(saved.getId(), "CANCELLED", Map.of("previousStatus", previousStatus));
 
-        recordEvent(saved.getId(), "CANCELLED", Map.of(
-                "previousStatus", previousStatus
-        ));
+        jobCacheService.put(userId, JobResponse.from(saved));
 
         return saved;
     }
@@ -126,7 +148,6 @@ public class JobService {
         if (rawPriority == null || rawPriority.isBlank()) {
             return JobPriority.NORMAL;
         }
-
         try {
             return JobPriority.valueOf(rawPriority.toUpperCase());
         } catch (IllegalArgumentException ex) {
@@ -134,11 +155,7 @@ public class JobService {
         }
     }
 
-    private void recordEvent(
-            UUID jobId,
-            String eventType,
-            Map<String, Object> metadata
-    ) {
+    private void recordEvent(UUID jobId, String eventType, Map<String, Object> metadata) {
         JobEvent event = new JobEvent();
         event.setJobId(jobId);
         event.setEventType(eventType);

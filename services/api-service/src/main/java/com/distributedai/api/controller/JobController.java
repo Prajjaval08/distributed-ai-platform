@@ -15,7 +15,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
-
+import org.springframework.web.bind.annotation.RequestHeader;
+import com.distributedai.api.exception.DuplicateIdempotencyKeyException;
 import java.util.UUID;
 
 @RestController
@@ -33,18 +34,22 @@ public class JobController {
         this.jobCacheService = jobCacheService;
     }
 
-    @PostMapping
+  @PostMapping
     public ResponseEntity<JobResponse> createJob(
             @Valid @RequestBody CreateJobRequest request,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication
     ) {
         UUID userId = currentUserId(authentication);
-
-        Job job = jobService.createJob(userId, request);
-
-        return ResponseEntity
-                .status(HttpStatus.ACCEPTED)
-                .body(JobResponse.from(job));
+        try {
+            Job job = jobService.createJob(userId, request, idempotencyKey);
+            return ResponseEntity.status(HttpStatus.ACCEPTED).body(JobResponse.from(job));
+        } catch (DuplicateIdempotencyKeyException raced) {
+            // Lost a concurrent race for this key - fetch and return the
+            // job the winning request actually created.
+            Job winningJob = jobService.getJob(userId, raced.existingJobId());
+            return ResponseEntity.status(HttpStatus.ACCEPTED).body(JobResponse.from(winningJob));
+        }
     }
 
     @GetMapping("/{id}")
