@@ -4,6 +4,7 @@ import com.distributedai.api.dto.CreateJobRequest;
 import com.distributedai.api.dto.JobResponse;
 import com.distributedai.api.dto.JobResultResponse;
 import com.distributedai.api.entity.Job;
+import com.distributedai.api.service.JobCacheService;
 import com.distributedai.api.service.JobService;
 import jakarta.validation.Valid;
 import org.springframework.data.domain.Page;
@@ -22,9 +23,14 @@ import java.util.UUID;
 public class JobController {
 
     private final JobService jobService;
+    private final JobCacheService jobCacheService;
 
-    public JobController(JobService jobService) {
+    public JobController(
+            JobService jobService,
+            JobCacheService jobCacheService
+    ) {
         this.jobService = jobService;
+        this.jobCacheService = jobCacheService;
     }
 
     @PostMapping
@@ -33,15 +39,39 @@ public class JobController {
             Authentication authentication
     ) {
         UUID userId = currentUserId(authentication);
+
         Job job = jobService.createJob(userId, request);
-        return ResponseEntity.status(HttpStatus.ACCEPTED).body(JobResponse.from(job));
+
+        return ResponseEntity
+                .status(HttpStatus.ACCEPTED)
+                .body(JobResponse.from(job));
     }
 
     @GetMapping("/{id}")
-    public JobResponse getJob(@PathVariable("id") UUID jobId, Authentication authentication) {
+    public JobResponse getJob(
+            @PathVariable("id") UUID jobId,
+            Authentication authentication
+    ) {
         UUID userId = currentUserId(authentication);
+
+        // 1. Try Redis first using user-scoped cache key.
+        JobResponse cached = jobCacheService.get(userId, jobId);
+
+        if (cached != null) {
+            return cached;
+        }
+
+        // 2. Cache miss -> PostgreSQL.
+        // JobService enforces ownership using userId + jobId.
         Job job = jobService.getJob(userId, jobId);
-        return JobResponse.from(job);
+
+        // 3. Convert entity to DTO.
+        JobResponse response = JobResponse.from(job);
+
+        // 4. Populate Redis.
+        jobCacheService.put(userId, response);
+
+        return response;
     }
 
     @GetMapping
@@ -51,22 +81,44 @@ public class JobController {
             Authentication authentication
     ) {
         UUID userId = currentUserId(authentication);
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
-        return jobService.listJobs(userId, pageable).map(JobResponse::from);
+
+        Pageable pageable = PageRequest.of(
+                page,
+                size,
+                Sort.by(Sort.Direction.DESC, "createdAt")
+        );
+
+        return jobService
+                .listJobs(userId, pageable)
+                .map(JobResponse::from);
     }
 
     @PostMapping("/{id}/cancel")
-    public JobResponse cancelJob(@PathVariable("id") UUID jobId, Authentication authentication) {
+    public JobResponse cancelJob(
+            @PathVariable("id") UUID jobId,
+            Authentication authentication
+    ) {
         UUID userId = currentUserId(authentication);
+
         Job job = jobService.cancelJob(userId, jobId);
+
         return JobResponse.from(job);
     }
 
     @GetMapping("/{id}/result")
-    public JobResultResponse getResult(@PathVariable("id") UUID jobId, Authentication authentication) {
+    public JobResultResponse getResult(
+            @PathVariable("id") UUID jobId,
+            Authentication authentication
+    ) {
         UUID userId = currentUserId(authentication);
+
         Job job = jobService.getResult(userId, jobId);
-        return new JobResultResponse(job.getId(), job.getStatus().name(), job.getResultUrl());
+
+        return new JobResultResponse(
+                job.getId(),
+                job.getStatus().name(),
+                job.getResultUrl()
+        );
     }
 
     private UUID currentUserId(Authentication authentication) {

@@ -1,7 +1,5 @@
 package com.distributedai.api.service;
 
-import com.distributedai.api.ai.AiGenerationRequest;
-import com.distributedai.api.ai.AiGenerationResult;
 import com.distributedai.api.ai.AiProvider;
 import com.distributedai.api.dto.CreateJobRequest;
 import com.distributedai.api.entity.Job;
@@ -57,6 +55,7 @@ public class JobService {
         job.setPriority(parsePriority(request.priority()));
 
         Job saved = jobRepository.save(job);
+
         recordEvent(saved.getId(), "CREATED", Map.of(
                 "model", saved.getModel(),
                 "priority", saved.getPriority().name()
@@ -73,8 +72,10 @@ public class JobService {
 
         saved.setStatus(JobStatus.QUEUED);
         Job queued = jobRepository.save(saved);
+
         recordEvent(queued.getId(), "QUEUED", Map.of());
 
+        // Do not cache newly created/queued jobs.
         return queued;
     }
 
@@ -93,14 +94,19 @@ public class JobService {
     public Job cancelJob(UUID userId, UUID jobId) {
         Job job = getJob(userId, jobId);
 
-        if (job.getStatus() != JobStatus.CREATED && job.getStatus() != JobStatus.QUEUED) {
+        if (job.getStatus() != JobStatus.CREATED
+                && job.getStatus() != JobStatus.QUEUED) {
             throw new JobNotCancellableException(job.getStatus().name());
         }
 
         String previousStatus = job.getStatus().name();
+
         job.setStatus(JobStatus.CANCELLED);
         Job saved = jobRepository.save(job);
-        recordEvent(saved.getId(), "CANCELLED", Map.of("previousStatus", previousStatus));
+
+        recordEvent(saved.getId(), "CANCELLED", Map.of(
+                "previousStatus", previousStatus
+        ));
 
         return saved;
     }
@@ -120,6 +126,7 @@ public class JobService {
         if (rawPriority == null || rawPriority.isBlank()) {
             return JobPriority.NORMAL;
         }
+
         try {
             return JobPriority.valueOf(rawPriority.toUpperCase());
         } catch (IllegalArgumentException ex) {
@@ -127,7 +134,11 @@ public class JobService {
         }
     }
 
-    private void recordEvent(UUID jobId, String eventType, Map<String, Object> metadata) {
+    private void recordEvent(
+            UUID jobId,
+            String eventType,
+            Map<String, Object> metadata
+    ) {
         JobEvent event = new JobEvent();
         event.setJobId(jobId);
         event.setEventType(eventType);

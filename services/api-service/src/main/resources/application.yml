@@ -19,11 +19,18 @@ kafka-topics:
 spring:
   application:
     name: api-service
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
   datasource:
     url: jdbc:postgresql://localhost:5432/ai_platform
     username: ai_platform_user
     password: ${POSTGRES_PASSWORD:devpassword}
     driver-class-name: org.postgresql.Driver
+
   jpa:
     hibernate:
       ddl-auto: validate
@@ -32,10 +39,12 @@ spring:
       hibernate:
         format_sql: true
     show-sql: false
+
   flyway:
     enabled: true
     locations: classpath:db/migration
     baseline-on-migrate: true
+
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     producer:
@@ -47,6 +56,9 @@ spring:
 jwt:
   secret: ${JWT_SECRET:local-dev-only-secret-please-change-me-32chars-min}
   expiration-ms: ${JWT_EXPIRATION_MS:900000}
+
+cache:
+  job-ttl-seconds: ${REDIS_JOB_CACHE_TTL_SECONDS:60}
 
 server:
   port: 8080
