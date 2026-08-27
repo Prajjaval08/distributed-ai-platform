@@ -28,23 +28,34 @@ retry:
 cache:
   job-ttl-seconds: ${REDIS_JOB_CACHE_TTL_SECONDS:60}
 
+resilience:
+  ai-provider-timeout-seconds: ${AI_PROVIDER_TIMEOUT_SECONDS:10}
+  object-storage-timeout-seconds: ${OBJECT_STORAGE_TIMEOUT_SECONDS:5}
+  circuit-breaker-failure-rate-threshold: ${CIRCUIT_BREAKER_FAILURE_RATE_THRESHOLD:50}
+  circuit-breaker-wait-duration-seconds: ${CIRCUIT_BREAKER_WAIT_DURATION_SECONDS:10}
+  circuit-breaker-min-calls: ${CIRCUIT_BREAKER_MIN_CALLS:5}
+
 spring:
   application:
     name: worker-service
+
   data:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
+
   datasource:
     url: jdbc:postgresql://localhost:5432/ai_platform
     username: ai_platform_user
     password: ${POSTGRES_PASSWORD:devpassword}
     driver-class-name: org.postgresql.Driver
+
   jpa:
     hibernate:
       ddl-auto: validate
     open-in-view: false
     show-sql: false
+
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
 

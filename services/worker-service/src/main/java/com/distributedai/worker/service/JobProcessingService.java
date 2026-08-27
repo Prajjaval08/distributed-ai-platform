@@ -1,5 +1,7 @@
 package com.distributedai.worker.service;
 
+import com.distributedai.worker.ai.AiProviderException;
+import com.distributedai.worker.storage.ObjectStorageException;
 import com.distributedai.worker.ai.AiGenerationRequest;
 import com.distributedai.worker.ai.AiGenerationResult;
 import com.distributedai.worker.ai.AiProvider;
@@ -18,6 +20,17 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.timelimiter.TimeLimiter;
+import org.springframework.beans.factory.annotation.Qualifier;
+
+import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.function.Supplier;
+
 import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.Optional;
@@ -35,24 +48,38 @@ public class JobProcessingService {
     private final DlqProducer dlqProducer;
     private final BackoffCalculator backoffCalculator;
     private final int maxAttempts;
+     private final CircuitBreaker aiProviderCircuitBreaker;
+    private final CircuitBreaker objectStorageCircuitBreaker;
+    private final TimeLimiter aiProviderTimeLimiter;
+    private final TimeLimiter objectStorageTimeLimiter;
+    private final ExecutorService executorService = Executors.newCachedThreadPool();
 
-    public JobProcessingService(
-            JobRepository jobRepository,
-            JobEventRepository jobEventRepository,
-            AiProvider aiProvider,
-            ObjectStorage objectStorage,
-            DlqProducer dlqProducer,
-            BackoffCalculator backoffCalculator,
-            @Value("${retry.max-attempts}") int maxAttempts
-    ) {
-        this.jobRepository = jobRepository;
-        this.jobEventRepository = jobEventRepository;
-        this.aiProvider = aiProvider;
-        this.objectStorage = objectStorage;
-        this.dlqProducer = dlqProducer;
-        this.backoffCalculator = backoffCalculator;
-        this.maxAttempts = maxAttempts;
-    }
+
+   public JobProcessingService(
+        JobRepository jobRepository,
+        JobEventRepository jobEventRepository,
+        AiProvider aiProvider,
+        ObjectStorage objectStorage,
+        DlqProducer dlqProducer,
+        BackoffCalculator backoffCalculator,
+        @Qualifier("aiProviderCircuitBreaker") CircuitBreaker aiProviderCircuitBreaker,
+        @Qualifier("objectStorageCircuitBreaker") CircuitBreaker objectStorageCircuitBreaker,
+        @Qualifier("aiProviderTimeLimiter") TimeLimiter aiProviderTimeLimiter,
+        @Qualifier("objectStorageTimeLimiter") TimeLimiter objectStorageTimeLimiter,
+        @Value("${retry.max-attempts}") int maxAttempts
+) {
+    this.jobRepository = jobRepository;
+    this.jobEventRepository = jobEventRepository;
+    this.aiProvider = aiProvider;
+    this.objectStorage = objectStorage;
+    this.dlqProducer = dlqProducer;
+    this.backoffCalculator = backoffCalculator;
+    this.aiProviderCircuitBreaker = aiProviderCircuitBreaker;
+    this.objectStorageCircuitBreaker = objectStorageCircuitBreaker;
+    this.aiProviderTimeLimiter = aiProviderTimeLimiter;
+    this.objectStorageTimeLimiter = objectStorageTimeLimiter;
+    this.maxAttempts = maxAttempts;
+}
 
     public void process(JobMessage message) {
         Optional<Job> maybeJob = jobRepository.findById(message.jobId());
@@ -71,17 +98,15 @@ public class JobProcessingService {
         attemptWithRetries(job, message);
     }
 
-    private void attemptWithRetries(Job job, JobMessage message) {
+       private void attemptWithRetries(Job job, JobMessage message) {
         int attempt = 0;
 
         while (true) {
             attempt++;
             try {
-                AiGenerationResult result = aiProvider.generate(
-                        new AiGenerationRequest(job.getPrompt(), job.getModel(), job.getParameters()));
-
+                AiGenerationResult result = callAiProvider(job);
                 String key = "jobs/" + job.getId() + "/result.png";
-                String resultUrl = objectStorage.upload(key, result.data(), result.contentType());
+                String resultUrl = callObjectStorage(key, result);
 
                 markCompleted(job, resultUrl);
                 log.info("Job {} completed successfully on attempt {}", job.getId(), attempt);
@@ -104,14 +129,62 @@ public class JobProcessingService {
                             "errorMessage", String.valueOf(ex.getMessage())
                     ));
                     sleep(delay);
-                    continue; // retry
+                    continue;
                 }
 
-                // Not retryable, or retries exhausted: terminal FAILED + DLQ
                 markFailed(job, category, ex.getMessage());
                 publishToDlq(job, message, category, ex.getMessage());
                 return;
             }
+        }
+    }
+
+    private AiGenerationResult callAiProvider(Job job) throws Exception {
+        Supplier<AiGenerationResult> decorated = CircuitBreaker.decorateSupplier(
+                aiProviderCircuitBreaker,
+                () -> runWithTimeout(aiProviderTimeLimiter,
+                        () -> aiProvider.generate(new AiGenerationRequest(job.getPrompt(), job.getModel(), job.getParameters())))
+        );
+        try {
+            return decorated.get();
+        } catch (CallNotPermittedException cnp) {
+            throw new AiProviderException("AI provider circuit breaker is OPEN", FailureCategory.DEPENDENCY, cnp);
+        }
+    }
+
+    private String callObjectStorage(String key, AiGenerationResult result) throws Exception {
+        Supplier<String> decorated = CircuitBreaker.decorateSupplier(
+                objectStorageCircuitBreaker,
+                () -> runWithTimeout(objectStorageTimeLimiter,
+                        () -> objectStorage.upload(key, result.data(), result.contentType()))
+        );
+        try {
+            return decorated.get();
+        } catch (CallNotPermittedException cnp) {
+            throw new ObjectStorageException("Object storage circuit breaker is OPEN", FailureCategory.DEPENDENCY, cnp);
+        }
+    }
+
+    /**
+     * Bridges a blocking call through Resilience4j's TimeLimiter, which
+     * requires a Future. The blocking work runs on a cached thread pool;
+     * TimeLimiter enforces the wall-clock bound (Section 18.1) regardless
+     * of whether the underlying call itself respects any timeout.
+     */
+    private <T> T runWithTimeout(TimeLimiter timeLimiter, Callable<T> callable) {
+        try {
+            return timeLimiter.executeFutureSupplier(() -> CompletableFuture.supplyAsync(() -> {
+                try {
+                    return callable.call();
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            }, executorService));
+        } catch (Exception ex) {
+            if (ex.getCause() instanceof RuntimeException re && re.getCause() != null) {
+                throw new RuntimeException(re.getCause());
+            }
+            throw new RuntimeException(ex);
         }
     }
 
