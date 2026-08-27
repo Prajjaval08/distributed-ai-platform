@@ -15,6 +15,8 @@ object-storage:
 
 kafka-topics:
   ai-jobs: ${KAFKA_TOPIC_AI_JOBS:ai-jobs}
+  ai-jobs-high: ${KAFKA_TOPIC_AI_JOBS_HIGH:ai-jobs-high}
+  ai-jobs-low: ${KAFKA_TOPIC_AI_JOBS_LOW:ai-jobs-low}
 
 cache:
   job-ttl-seconds: ${REDIS_JOB_CACHE_TTL_SECONDS:60}

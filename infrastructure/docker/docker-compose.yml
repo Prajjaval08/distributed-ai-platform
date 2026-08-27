@@ -96,7 +96,9 @@ services:
         condition: service_healthy
     entrypoint: >
       bash -c "
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ai-jobs-high --partitions 3 --replication-factor 1;
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ai-jobs --partitions 6 --replication-factor 1;
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ai-jobs-low --partitions 3 --replication-factor 1;
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ai-job-results --partitions 3 --replication-factor 1;
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ai-job-failures --partitions 3 --replication-factor 1;
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ai-jobs-dlq --partitions 3 --replication-factor 1;
@@ -105,5 +107,5 @@ services:
 
 volumes:
   postgres_data:
-  minio_data:
   redis_data:
+  minio_data:
