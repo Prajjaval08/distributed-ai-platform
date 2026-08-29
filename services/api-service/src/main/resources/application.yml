@@ -37,6 +37,11 @@ spring:
     username: ai_platform_user
     password: ${POSTGRES_PASSWORD:devpassword}
     driver-class-name: org.postgresql.Driver
+  replica-datasource:
+    url: ${REPLICA_DB_URL:jdbc:postgresql://localhost:5433/ai_platform}
+    username: ai_platform_user
+    password: ${POSTGRES_PASSWORD:devpassword}
+    driver-class-name: org.postgresql.Driver
   jpa:
     hibernate:
       ddl-auto: validate

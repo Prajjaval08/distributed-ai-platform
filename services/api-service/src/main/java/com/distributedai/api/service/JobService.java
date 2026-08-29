@@ -20,6 +20,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
+import com.distributedai.api.config.DataSourceContextHolder;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
@@ -110,9 +111,14 @@ public class JobService {
                 .orElseThrow(JobNotFoundException::new);
     }
 
-    @Transactional(readOnly = true)
+       @Transactional(readOnly = true)
     public Page<Job> listJobs(UUID userId, Pageable pageable) {
-        return jobRepository.findByUserId(userId, pageable);
+        try {
+            DataSourceContextHolder.useReplica();
+            return jobRepository.findByUserId(userId, pageable);
+        } finally {
+            DataSourceContextHolder.clear();
+        }
     }
 
     @Transactional
