@@ -14,6 +14,8 @@ import com.distributedai.worker.kafka.JobMessage;
 import com.distributedai.worker.repository.JobEventRepository;
 import com.distributedai.worker.repository.JobRepository;
 import com.distributedai.worker.storage.ObjectStorage;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -47,6 +49,8 @@ public class JobProcessingService {
     private final ObjectStorage objectStorage;
     private final DlqProducer dlqProducer;
     private final BackoffCalculator backoffCalculator;
+    private final JobCacheService jobCacheService;
+    private final MeterRegistry meterRegistry;
     private final int maxAttempts;
      private final CircuitBreaker aiProviderCircuitBreaker;
     private final CircuitBreaker objectStorageCircuitBreaker;
@@ -62,6 +66,8 @@ public class JobProcessingService {
         ObjectStorage objectStorage,
         DlqProducer dlqProducer,
         BackoffCalculator backoffCalculator,
+        JobCacheService jobCacheService,
+        MeterRegistry meterRegistry,
         @Qualifier("aiProviderCircuitBreaker") CircuitBreaker aiProviderCircuitBreaker,
         @Qualifier("objectStorageCircuitBreaker") CircuitBreaker objectStorageCircuitBreaker,
         @Qualifier("aiProviderTimeLimiter") TimeLimiter aiProviderTimeLimiter,
@@ -74,6 +80,8 @@ public class JobProcessingService {
     this.objectStorage = objectStorage;
     this.dlqProducer = dlqProducer;
     this.backoffCalculator = backoffCalculator;
+    this.jobCacheService = jobCacheService;
+    this.meterRegistry = meterRegistry;
     this.aiProviderCircuitBreaker = aiProviderCircuitBreaker;
     this.objectStorageCircuitBreaker = objectStorageCircuitBreaker;
     this.aiProviderTimeLimiter = aiProviderTimeLimiter;
@@ -140,6 +148,7 @@ public class JobProcessingService {
     }
 
     private AiGenerationResult callAiProvider(Job job) throws Exception {
+        Timer.Sample sample = Timer.start(meterRegistry);
         Supplier<AiGenerationResult> decorated = CircuitBreaker.decorateSupplier(
                 aiProviderCircuitBreaker,
                 () -> runWithTimeout(aiProviderTimeLimiter,
@@ -149,6 +158,10 @@ public class JobProcessingService {
             return decorated.get();
         } catch (CallNotPermittedException cnp) {
             throw new AiProviderException("AI provider circuit breaker is OPEN", FailureCategory.DEPENDENCY, cnp);
+        } finally {
+            sample.stop(Timer.builder("ai_provider_latency")
+                    .tag("model", job.getModel())
+                    .register(meterRegistry));
         }
     }
 
@@ -201,6 +214,8 @@ public class JobProcessingService {
         job.setCompletedAt(LocalDateTime.now());
         jobRepository.save(job);
         recordEvent(job.getId(), "COMPLETED", Map.of("resultUrl", resultUrl));
+        jobCacheService.put(job);
+        meterRegistry.counter("jobs_completed", "model", job.getModel()).increment();
     }
 
     private void markFailed(Job job, FailureCategory category, String errorMessage) {
@@ -214,6 +229,8 @@ public class JobProcessingService {
                 "errorMessage", String.valueOf(errorMessage),
                 "retryCount", job.getRetryCount()
         ));
+        jobCacheService.put(job);
+        meterRegistry.counter("jobs_failed", "category", category.name()).increment();
         log.error("Job {} FAILED permanently ({}), retryCount={}: {}",
                 job.getId(), category, job.getRetryCount(), errorMessage);
     }

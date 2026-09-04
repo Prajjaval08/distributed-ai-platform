@@ -34,45 +34,39 @@ public class SecurityConfig {
         return new BCryptPasswordEncoder();
     }
 
-    @Bean
-    public AuthenticationManager authenticationManager(
-            AuthenticationConfiguration config
-    ) throws Exception {
-        return config.getAuthenticationManager();
-    }
+@Bean
+public SecurityFilterChain securityFilterChain(
+        HttpSecurity http
+) throws Exception {
 
-    @Bean
-    public SecurityFilterChain securityFilterChain(
-            HttpSecurity http
-    ) throws Exception {
+    http
+        .csrf(AbstractHttpConfigurer::disable)
 
-        http
-            .csrf(AbstractHttpConfigurer::disable)
+        .sessionManagement(session ->
+            session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+        )
 
-            .sessionManagement(session ->
-                session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
-            )
+        .authorizeHttpRequests(auth -> auth
+            .requestMatchers(
+                "/api/v1/auth/register",
+                "/api/v1/auth/login",
+                "/actuator/health",
+                "/actuator/info",
+                "/actuator/prometheus"
+            ).permitAll()
+            .anyRequest().authenticated()
+        )
 
-            .authorizeHttpRequests(auth -> auth
-                .requestMatchers(
-                    "/api/v1/auth/register",
-                    "/api/v1/auth/login",
-                    "/actuator/health",
-                    "/actuator/info"
-                ).permitAll()
-                .anyRequest().authenticated()
-            )
+        .addFilterBefore(
+            jwtAuthenticationFilter,
+            UsernamePasswordAuthenticationFilter.class
+        )
 
-            .addFilterBefore(
-                jwtAuthenticationFilter,
-                UsernamePasswordAuthenticationFilter.class
-            )
+        .addFilterAfter(
+            rateLimitFilter,
+            JwtAuthenticationFilter.class
+        );
 
-            .addFilterAfter(
-                rateLimitFilter,
-                JwtAuthenticationFilter.class
-            );
-
-        return http.build();
-    }
+    return http.build();
+}
 }
