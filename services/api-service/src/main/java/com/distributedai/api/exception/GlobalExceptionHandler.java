@@ -1,6 +1,10 @@
+
 package com.distributedai.api.exception;
 
 import com.distributedai.api.dto.ErrorResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.BadCredentialsException;
@@ -13,16 +17,18 @@ import java.util.stream.Collectors;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
     @ExceptionHandler(EmailAlreadyExistsException.class)
     public ResponseEntity<ErrorResponse> handleEmailExists(EmailAlreadyExistsException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
-                .body(ErrorResponse.of("EMAIL_ALREADY_EXISTS", ex.getMessage()));
+                .body(withLoggedCode("EMAIL_ALREADY_EXISTS", ex.getMessage()));
     }
 
     @ExceptionHandler({InvalidCredentialsException.class, BadCredentialsException.class})
     public ResponseEntity<ErrorResponse> handleInvalidCredentials(RuntimeException ex) {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                .body(ErrorResponse.of("UNAUTHORIZED", "Invalid email or password"));
+                .body(withLoggedCode("UNAUTHORIZED", "Invalid email or password"));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -30,37 +36,51 @@ public class GlobalExceptionHandler {
         String message = ex.getBindingResult().getFieldErrors().stream()
                 .map(fieldError -> fieldError.getField() + ": " + fieldError.getDefaultMessage())
                 .collect(Collectors.joining("; "));
+
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                .body(ErrorResponse.of("INVALID_REQUEST", message));
+                .body(withLoggedCode("INVALID_REQUEST", message));
     }
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleUnexpected(Exception ex) {
         // Deliberately do not leak ex.getMessage() to the client for unclassified
-        // errors - could expose internals. Log it server-side (real logging in Phase 23).
+        // errors - could expose internals. Log it server-side.
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(ErrorResponse.of("INTERNAL_ERROR", "An unexpected error occurred"));
+                .body(withLoggedCode("INTERNAL_ERROR", "An unexpected error occurred"));
     }
-        @ExceptionHandler(JobNotFoundException.class)
+
+    @ExceptionHandler(JobNotFoundException.class)
     public ResponseEntity<ErrorResponse> handleJobNotFound(JobNotFoundException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                .body(ErrorResponse.of("JOB_NOT_FOUND", ex.getMessage()));
+                .body(withLoggedCode("JOB_NOT_FOUND", ex.getMessage()));
     }
 
     @ExceptionHandler(JobNotCancellableException.class)
     public ResponseEntity<ErrorResponse> handleJobNotCancellable(JobNotCancellableException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
-                .body(ErrorResponse.of("JOB_NOT_CANCELLABLE", ex.getMessage()));
+                .body(withLoggedCode("JOB_NOT_CANCELLABLE", ex.getMessage()));
     }
-        @ExceptionHandler(JobNotProcessableException.class)
+
+    @ExceptionHandler(JobNotProcessableException.class)
     public ResponseEntity<ErrorResponse> handleJobNotProcessable(JobNotProcessableException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
-                .body(ErrorResponse.of("JOB_NOT_PROCESSABLE", ex.getMessage()));
+                .body(withLoggedCode("JOB_NOT_PROCESSABLE", ex.getMessage()));
     }
 
     @ExceptionHandler(JobResultNotReadyException.class)
     public ResponseEntity<ErrorResponse> handleResultNotReady(JobResultNotReadyException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
-                .body(ErrorResponse.of("RESULT_NOT_READY", ex.getMessage()));
+                .body(withLoggedCode("RESULT_NOT_READY", ex.getMessage()));
+    }
+
+    private ErrorResponse withLoggedCode(String errorCode, String message) {
+        MDC.put("errorCode", errorCode);
+        try {
+            log.warn("Request failed: {} - {}", errorCode, message);
+            return ErrorResponse.of(errorCode, message);
+        } finally {
+            MDC.clear();
+        }
     }
 }
+

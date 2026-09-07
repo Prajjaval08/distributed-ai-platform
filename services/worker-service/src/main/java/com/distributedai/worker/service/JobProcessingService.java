@@ -18,6 +18,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -89,21 +90,26 @@ public class JobProcessingService {
     this.maxAttempts = maxAttempts;
 }
 
-    public void process(JobMessage message) {
-        Optional<Job> maybeJob = jobRepository.findById(message.jobId());
-        if (maybeJob.isEmpty()) {
-            log.warn("Received message for unknown jobId={}, skipping", message.jobId());
-            return;
-        }
+        public void process(JobMessage message) {
+        MDC.put("jobId", message.jobId().toString());
+        try {
+            Optional<Job> maybeJob = jobRepository.findById(message.jobId());
+            if (maybeJob.isEmpty()) {
+                log.warn("Received message for unknown jobId={}, skipping", message.jobId());
+                return;
+            }
 
-        Job job = maybeJob.get();
-        if (job.getStatus() != JobStatus.QUEUED) {
-            log.info("Job {} is not QUEUED (status={}), skipping - likely a redelivery", job.getId(), job.getStatus());
-            return;
-        }
+            Job job = maybeJob.get();
+            if (job.getStatus() != JobStatus.QUEUED) {
+                log.info("Job {} is not QUEUED (status={}), skipping - likely a redelivery", job.getId(), job.getStatus());
+                return;
+            }
 
-        markProcessing(job);
-        attemptWithRetries(job, message);
+            markProcessing(job);
+            attemptWithRetries(job, message);
+        } finally {
+            MDC.clear();
+        }
     }
 
        private void attemptWithRetries(Job job, JobMessage message) {
