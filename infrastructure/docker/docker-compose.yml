@@ -1,4 +1,17 @@
 services:
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    container_name: ai-platform-jaeger
+    restart: unless-stopped
+
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC receiver
+      - "4318:4318"     # OTLP HTTP receiver
+
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
 
   postgres:
     image: postgres:16-alpine
@@ -274,8 +287,7 @@ services:
     volumes:
       - grafana_data:/var/lib/grafana
       - ../../monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
-      - ../../monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
-      - ../../monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ../../monitoring/grafana/provisioning/dashboards:/var/lib/grafana/dashboards:ro
 
 
 volumes:

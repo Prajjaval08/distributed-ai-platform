@@ -1,5 +1,7 @@
 package com.distributedai.api.dto;
 
+import io.opentelemetry.api.trace.Span;
+
 import java.time.Instant;
 
 public record ErrorResponse(
@@ -9,7 +11,16 @@ public record ErrorResponse(
         Instant timestamp
 ) {
     public static ErrorResponse of(String errorCode, String message) {
-        // traceId is a placeholder until Phase 24 (OpenTelemetry) gives us a real one
-        return new ErrorResponse(errorCode, message, "unavailable", Instant.now());
+
+        String traceId = Span.current()
+                .getSpanContext()
+                .getTraceId();
+
+        return new ErrorResponse(
+                errorCode,
+                message,
+                traceId,
+                Instant.now()
+        );
     }
 }
