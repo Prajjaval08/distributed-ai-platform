@@ -34,7 +34,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Component
 public class PriorityJobPoller implements DisposableBean {
 
-    private static final Logger log = LoggerFactory.getLogger(PriorityJobPoller.class);
+    private static final Logger log =
+            LoggerFactory.getLogger(PriorityJobPoller.class);
 
     private final JobProcessingService jobProcessingService;
     private final String bootstrapServers;
@@ -45,7 +46,9 @@ public class PriorityJobPoller implements DisposableBean {
     private final Tracer tracer =
             GlobalOpenTelemetry.getTracer("worker-service-kafka-consumer");
 
-    private final AtomicBoolean running = new AtomicBoolean(true);
+    private final AtomicBoolean running =
+            new AtomicBoolean(true);
+
     private final ScheduledExecutorService executor =
             Executors.newSingleThreadScheduledExecutor();
 
@@ -61,7 +64,10 @@ public class PriorityJobPoller implements DisposableBean {
                         ConsumerRecord<String, JobMessage> record) {
 
                     return java.util.stream.StreamSupport
-                            .stream(record.headers().spliterator(), false)
+                            .stream(
+                                    record.headers().spliterator(),
+                                    false
+                            )
                             .map(Header::key)
                             .toList();
                 }
@@ -71,7 +77,8 @@ public class PriorityJobPoller implements DisposableBean {
                         ConsumerRecord<String, JobMessage> record,
                         String key) {
 
-                    Header header = record.headers().lastHeader(key);
+                    Header header =
+                            record.headers().lastHeader(key);
 
                     return header == null
                             ? null
@@ -84,10 +91,14 @@ public class PriorityJobPoller implements DisposableBean {
 
     public PriorityJobPoller(
             JobProcessingService jobProcessingService,
-            @Value("${spring.kafka.bootstrap-servers}") String bootstrapServers,
-            @Value("${kafka-topics.ai-jobs-high}") String highTopic,
-            @Value("${kafka-topics.ai-jobs}") String normalTopic,
-            @Value("${kafka-topics.ai-jobs-low}") String lowTopic
+            @Value("${spring.kafka.bootstrap-servers}")
+            String bootstrapServers,
+            @Value("${kafka-topics.ai-jobs-high}")
+            String highTopic,
+            @Value("${kafka-topics.ai-jobs}")
+            String normalTopic,
+            @Value("${kafka-topics.ai-jobs-low}")
+            String lowTopic
     ) {
         this.jobProcessingService = jobProcessingService;
         this.bootstrapServers = bootstrapServers;
@@ -99,14 +110,26 @@ public class PriorityJobPoller implements DisposableBean {
     @EventListener(ApplicationReadyEvent.class)
     public void start() {
 
-        highConsumer = buildConsumer("ai-worker-group-high");
-        highConsumer.subscribe(List.of(highTopic));
+        highConsumer =
+                buildConsumer("ai-worker-group-high");
 
-        normalConsumer = buildConsumer("ai-worker-group");
-        normalConsumer.subscribe(List.of(normalTopic));
+        highConsumer.subscribe(
+                List.of(highTopic)
+        );
 
-        lowConsumer = buildConsumer("ai-worker-group-low");
-        lowConsumer.subscribe(List.of(lowTopic));
+        normalConsumer =
+                buildConsumer("ai-worker-group");
+
+        normalConsumer.subscribe(
+                List.of(normalTopic)
+        );
+
+        lowConsumer =
+                buildConsumer("ai-worker-group-low");
+
+        lowConsumer.subscribe(
+                List.of(lowTopic)
+        );
 
         executor.scheduleWithFixedDelay(
                 this::pollCycle,
@@ -156,7 +179,20 @@ public class PriorityJobPoller implements DisposableBean {
             String label) {
 
         ConsumerRecords<String, JobMessage> records =
-                consumer.poll(Duration.ofMillis(200));
+                consumer.poll(
+                        Duration.ofMillis(200)
+                );
+
+        // Diagnostic logging:
+        // Shows how many records Kafka returned in this poll.
+        if (!records.isEmpty()) {
+
+            log.info(
+                    "{} poll returned {} records",
+                    label,
+                    records.count()
+            );
+        }
 
         if (records.isEmpty()) {
             return false;
@@ -165,7 +201,8 @@ public class PriorityJobPoller implements DisposableBean {
         for (ConsumerRecord<String, JobMessage> record : records) {
 
             Context extractedContext =
-                    GlobalOpenTelemetry.getPropagators()
+                    GlobalOpenTelemetry
+                            .getPropagators()
                             .getTextMapPropagator()
                             .extract(
                                     Context.current(),
@@ -173,16 +210,22 @@ public class PriorityJobPoller implements DisposableBean {
                                     GETTER
                             );
 
-            Span span = tracer.spanBuilder(
-                            "process " + label + " job"
-                    )
-                    .setParent(extractedContext)
-                    .setSpanKind(SpanKind.CONSUMER)
-                    .startSpan();
+            Span span =
+                    tracer
+                            .spanBuilder(
+                                    "process " + label + " job"
+                            )
+                            .setParent(extractedContext)
+                            .setSpanKind(
+                                    SpanKind.CONSUMER
+                            )
+                            .startSpan();
 
             try (var scope = span.makeCurrent()) {
 
-                jobProcessingService.process(record.value());
+                jobProcessingService.process(
+                        record.value()
+                );
 
             } catch (Exception ex) {
 
@@ -209,7 +252,8 @@ public class PriorityJobPoller implements DisposableBean {
     private KafkaConsumer<String, JobMessage> buildConsumer(
             String groupId) {
 
-        Properties props = new Properties();
+        Properties props =
+                new Properties();
 
         props.put(
                 ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG,
@@ -261,7 +305,9 @@ public class PriorityJobPoller implements DisposableBean {
                 "earliest"
         );
 
-        return new KafkaConsumer<>(props);
+        return new KafkaConsumer<>(
+                props
+        );
     }
 
     @Override
@@ -295,6 +341,8 @@ public class PriorityJobPoller implements DisposableBean {
             lowConsumer.close();
         }
 
-        log.info("PriorityJobPoller stopped");
+        log.info(
+                "PriorityJobPoller stopped"
+        );
     }
 }
