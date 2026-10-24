@@ -1,0 +1,51 @@
+# HorizontalPodAutoscaler for the worker fleet.
+#
+# WORKING SCALER (this file, active): CPU utilisation. This works out of the
+# box with metrics-server and is the scaler you can rely on today.
+#
+# KAFKA-LAG SCALER (documented, NOT wired): scaling directly on Kafka
+# consumer lag is the better signal for this platform (lag is what queue
+# wait time tracks), but it needs machinery that does not exist in this
+# repo yet, so it is not invented here. To wire it:
+#   1. Run a Kafka lag exporter in the cluster (e.g. kafka_exporter, or
+#      JMX exporter on the workers) exposing a kafka_consumergroup_lag
+#      gauge per consumer group, scraped by Prometheus.
+#   2. Install prometheus-adapter so that gauge is exposed through the
+#      Kubernetes custom-metrics API as e.g. kafka_consumergroup_lag.
+#   3. Uncomment the external-metric block below (and adjust the metric
+#      name/selector to match your exporter), then verify with
+#      `kubectl get --raw "/apis/external.metrics.k8s.io/v1beta1"`.
+# Until then, do not claim the HPA scales on lag — it scales on CPU.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker-service
+  namespace: ai-platform
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: worker-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    # Kafka-lag scaler — commented out until steps 1-3 above are done:
+    # - type: External
+    #   external:
+    #     metric:
+    #       name: kafka_consumergroup_lag
+    #       selector:
+    #         matchLabels:
+    #           consumergroup: ai-worker-group
+    #     target:
+    #       type: AverageValue
+    #       averageValue: "100"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300

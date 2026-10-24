@@ -16,10 +16,6 @@ public class MockAiProvider implements AiProvider {
 
     @Override
     public AiGenerationResult generate(AiGenerationRequest request) {
-        if ("FORCE_FAIL".equals(request.prompt())) {
-            throw new AiProviderException("Simulated failure for testing", FailureCategory.DEPENDENCY);
-        }
-
         try {
             int width = 512;
             int height = 512;
