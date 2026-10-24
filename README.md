@@ -4,6 +4,110 @@ A containerized distributed AI inference platform implementing asynchronous job 
 
 Status: living engineering document — always aligned to repository contents.
 
+## Project Status
+
+Status as of 24 Oct 2026, updated with the Phase 22–25 work on branch
+`phase-22-docker` (see [PR #1](https://github.com/Prajjaval08/distributed-ai-platform/pull/1)
+to `master`). Phases 0–21 are done. Phases 22, 23 and 25 are prepared and
+pushed (with one exception, below); Phase 24 is a plan only.
+
+### 1. What the project is
+
+An asynchronous AI inference platform. A client submits a job through a REST
+API and gets `202 Accepted` with a job ID. The job is stored in PostgreSQL
+and published to Kafka. A separate worker service consumes it, calls an AI
+provider (a mock by default), uploads the result to S3-compatible storage
+(MinIO) and marks the job COMPLETED.
+
+**Stack:** Java 21, Spring Boot 3.3.4, Maven, PostgreSQL 16 (primary +
+streaming replica), Flyway, Redis, Kafka (KRaft), MinIO, Nginx, Resilience4j,
+Prometheus, Grafana, OpenTelemetry, Jaeger, JUnit 5, Mockito, Testcontainers,
+k6, Docker Compose.
+
+**Layout:** `services/api-service`, `services/worker-service`,
+`infrastructure/docker` (docker-compose.yml), `infrastructure/nginx`,
+`monitoring/prometheus`, `tests/k6`, `docs/`.
+
+### 2. Completed phases
+
+| Phase | Topic | Outcome |
+|---|---|---|
+| 0 | Environment setup | JDK 21, Maven, Docker (WSL2), Git, repo skeleton |
+| 1 | Spring Boot skeleton | api-service starts, `/actuator/health` returns UP |
+| 2 | PostgreSQL + Flyway + entities | Tables users, jobs, job_events, idempotency_keys with indexes; `ddl-auto: validate` |
+| 3 | Auth + JWT | Register/login, BCrypt, stateless JWT filter, centralized error handler |
+| 4 | Job APIs | Create/get/list/cancel/result, ownership via `findByIdAndUserId`, `parameters` JSONB migration (V6) |
+| 5 | AI provider + object storage abstraction | `AiProvider` and `ObjectStorage` interfaces, Mock and OpenAI providers, MinIO via presigned URLs (path-style fix) |
+| 6 | Kafka producer | Topics created with explicit partitions, job moves to QUEUED after publish |
+| 7 | Worker service | Separate Maven module, job-state guard, manual offset commit, temporary `/process` endpoint removed |
+| 8 | Retry + DLQ | Failure classification, exponential backoff with jitter, `ai-jobs-dlq` |
+| 9 | Redis cache | Cache-aside for job status, user-scoped cache keys |
+| 10 | Rate limiting | Redis fixed window: 100 jobs/h per user, 10 auth requests/h per IP, 429 with Retry-After |
+| 11 | Idempotency | `Idempotency-Key` header, composite key (key + userId) |
+| 12 | Priority jobs | Topics `ai-jobs-high`, `ai-jobs` and `ai-jobs-low`, strict-precedence `PriorityJobPoller` |
+| 13 | Timeout + circuit breaker | Resilience4j circuit breakers and time limiters for the AI provider and storage |
+| 14 | Nginx + multiple API instances | Round-robin load balancing; the shared Redis rate limit showed the API is stateless |
+| 15 | DB read scaling | Real Postgres streaming replica, `AbstractRoutingDataSource`, only `listJobs` routed to the replica |
+| 16 | Prometheus + Grafana | Both services scraped (UP); Grafana connected to Prometheus |
+| 17 | Structured logging | JSON logs with `service`, `jobId` and `errorCode` via MDC |
+| 18 | OpenTelemetry | Java agent, Jaeger, manual Kafka context propagation, real `traceId` in error responses |
+| 19 | Automated tests | 38 tests (31 worker, 7 API) all passing; found and fixed the exception-unwrapping bug in `FailureClassifier` |
+| 20 | k6 load testing | See section 3 below |
+| 21 | Chaos testing | 7 scenarios exercised; see section 4 below |
+| 22 | Docker production-like environment | DONE and pushed on `phase-22-docker`: multi-stage Dockerfiles for api-service and worker-service, both added to Compose with health checks, one `docker compose up` stack, env vars and secrets via `.env`, OTel agent (2.31.1, from the committed root jar) in the images |
+| 23 | GitHub Actions CI/CD | PREPARED, NOT YET ON THE BRANCH: workflow builds and tests on every PR, Testcontainers in CI, Docker images tagged with the commit SHA, pushed to GHCR, pipeline fails when tests fail — but `.github/workflows/ci.yml` could not be pushed by the Muse GitHub App (403, missing workflow permission). Add it via the GitHub web UI on `phase-22-docker` or grant workflow permission and retry. See the Phase 23 section below. |
+| 24 | Cloud deployment | PLAN ONLY in `docs/cloud-deployment.md`: provider approach, managed Postgres, Kafka and object storage where possible, secrets management, public demo URL. Nothing provisioned, no accounts opened, no money spent. |
+| 25 | Kubernetes + HPA | DONE and pushed on `phase-22-docker`: Deployments, Services, ConfigMaps, placeholder-only Secrets, Ingress, HorizontalPodAutoscaler scaling workers on CPU (2–10 replicas, 70%). Kafka-lag scaling is documented in `infrastructure/kubernetes/worker-hpa.yaml`, not wired (it needs a lag exporter + prometheus-adapter). Manifests deploy only the two stateless services and assume PostgreSQL, Redis, Kafka, MinIO and Jaeger already exist as Services. |
+
+### 3. Measured results (Phase 20)
+
+- **Submission, 20 VUs:** about 25-28 req/s, P95 125-536 ms across runs, 0% errors.
+- **Single worker:** 844/844 jobs completed. Average queue wait was 31.7 s and processing 0.062 s, so queue wait is about 99.8% of end-to-end time.
+- **Two workers:** 887 jobs. Average queue wait fell to 24.0 s, a 24% reduction. Kafka showed 3 partitions per consumer.
+- These are single runs, not a statistically controlled benchmark.
+
+### 4. Chaos testing findings (Phase 21)
+
+- **Confirmed gap:** there is no replica failover. When the replica is down, `GET /jobs` returns 500. An early apparent success came from a stale pooled connection.
+- **Confirmed gap (code fix applied in this pass, see open items):** the rate limiter did not fail open when Redis was down, contrary to the Phase 10 design. Root cause found: Lettuce throws a `RedisConnectionException` instead of returning null, so the old null check never ran. `RateLimiter.checkAndIncrement` now catches `RuntimeException` and returns allowed.
+- **Worked as designed:** Kafka rebalance and consumer restart (lag returned to 0), and MinIO outage (RETRY, RETRY, FAILED, DLQ).
+- **Partial:** the API-instance kill test ran with a single backend (502), so it needs a clean re-run. The exact single-message mid-processing redelivery was not isolated.
+- **Referenced from earlier phases:** AI timeout behavior was verified in Phases 8 and 13.
+- Full report: `docs/failure-testing.md`.
+
+### 5. Known open items
+
+1. Redis fail-open bug in `RateLimiter` (`services/api-service/src/main/java/com/distributedai/api/ratelimit/RateLimiter.java`): FIXED in this pass — the method now catches `RuntimeException` (including Lettuce connection failures) and returns allowed. Not yet verified with a live Redis-down run; that still needs a Docker-host check.
+2. Replica failover (`services/api-service/src/main/java/com/distributedai/api/config/RoutingDataSource.java`, `JobService.listJobs`): STILL OPEN, deliberately left unchanged in this pass. Why: the failure happens at connection/query time, after the routing decision, inside a `@Transactional(readOnly = true)` method already bound to the replica connection. A lookup-key-only change cannot retry on primary, and a real fix needs connection-level fallback plus transaction handling (new transaction for the retry) plus stale-pool eviction and a health-check strategy — none of which can be verified without a live replica-down run (no Docker in this environment). Guessing at it would risk breaking `listJobs` or masking the failure.
+3. Re-run the API-instance kill test with two backends up.
+4. Phase 16 leftovers: confirm the business metrics appear in Prometheus and provision a Grafana dashboard JSON.
+5. Strict priority polling can starve LOW jobs; add fairness or aging (`services/worker-service/src/main/java/com/distributedai/worker/kafka/PriorityJobPoller.java`).
+6. Workers process records sequentially. Bounded parallelism with safe offset commits would cut queue wait further.
+7. Idempotency key cleanup job for expired keys is not built.
+8. Transactional outbox is not built (the DB-write plus Kafka-publish dual-write gap).
+9. `JobNotProcessableException` and its handler are dead code: DONE — removed, verified with no references remaining.
+10. `OpenAiImageProvider` is not wired into worker-service; only the mock is.
+11. The `FORCE_FAIL` test hook is still in `MockAiProvider`: DONE — removed, verified with no test depending on it.
+12. Windows sleep or suspend caused stalled Kafka consumers during testing; this is an environment issue, not a bug.
+13. Final README, commit to GitHub, and make sure no secrets are committed: README updated in this pass; commit is [PR #1](https://github.com/Prajjaval08/distributed-ai-platform/pull/1) (`phase-22-docker` → `master`), except the CI workflow file (see Phase 23 above). No real secrets were added; secret scan of this pass found only placeholders and pre-existing local defaults.
+
+### 6. Recurring lessons from this build
+
+- YAML indentation mistakes (a block nested under the wrong key) happened in Phases 3, 8, 10 and 15.
+- PowerShell `Set-Content -Encoding UTF8` adds a BOM that breaks `javac`; write files with `[System.IO.File]::WriteAllText` and a no-BOM encoding.
+- Files were sometimes created in the wrong folder or never created, so check with `dir` and `type` after each file step.
+- Postgres `28P01` password errors recurred after container restarts; fix with `ALTER USER ... WITH PASSWORD`.
+
+### 7. Resume bullet (measured numbers only)
+
+> Built an asynchronous AI inference platform (Java, Spring Boot, Kafka, Redis, PostgreSQL, Docker) with retry/backoff/DLQ, circuit breakers, idempotency, priority queues, read-replica routing, JSON logging, Prometheus metrics and OpenTelemetry tracing across Kafka. Load-tested at 20 VUs (about 25 req/s, 0% errors); found that queue wait was over 99% of end-to-end latency with one worker and reduced it 24% (31.7 s to 24.0 s) by adding a second consumer. Chaos testing exposed two gaps: no replica failover and a rate limiter that did not fail open.
+
+### 8. Remaining manual steps (not hidden)
+
+- Add `.github/workflows/ci.yml` to branch `phase-22-docker` (GitHub web UI, or grant the Muse GitHub App workflow permission and retry the push), then merge [PR #1](https://github.com/Prajjaval08/distributed-ai-platform/pull/1) into `master`.
+- On a Docker host: `cp .env.example infrastructure/docker/.env`, then `docker compose -f infrastructure/docker/docker-compose.yml up --build`, check `http://localhost:8080/actuator/health` and `http://localhost:8081/actuator/health`, and run a job-submission smoke test (register → login → submit job → 202 → poll to COMPLETED → fetch result). This also verifies the RateLimiter Redis-down fix and the still-open replica-failover gap.
+- Cloud provisioning per `docs/cloud-deployment.md`, including the managed-Kafka cost decision.
+
 ✨ Highlights
 
 Capability
@@ -604,13 +708,16 @@ committed OpenTelemetry agent jar (2.31.1) attached via
 
 ### Phase 23 — CI/CD
 
-`.github/workflows/ci.yml` builds and tests both services on every pull
+`.github/workflows/ci.yml` (prepared locally; NOT yet on branch
+`phase-22-docker` because the Muse GitHub App gets a 403 for workflow
+files) builds and tests both services on every pull
 request and push to `master` (Java 21, Maven; the Testcontainers
 PostgreSQL integration test runs on GitHub-hosted runners, which provide
 Docker). Any test failure fails the pipeline. On pushes to `master`
 only, tested images are pushed to GHCR tagged with the full commit SHA:
 `ghcr.io/prajjaval08/distributed-ai-platform-api-service:<sha>` and
-`...-worker-service:<sha>`.
+`...-worker-service:<sha>`. Add the workflow file to the branch first;
+CI cannot run until then.
 
 ### Phase 25 — Kubernetes
 
@@ -633,17 +740,19 @@ accounts, or spending were created in this pass.
 
 ### Remaining blockers (not hidden)
 
-- **GitHub write access:** the Muse GitHub App can read this public
-  repository but not write to it (403 on branch creation), so nothing
-  in this pass is pushed. Grant the app write access, then push branch
-  `phase-22-docker` and open a pull request to `master`.
+- **Pushed, except the CI workflow:** branch `phase-22-docker` is pushed
+  and [PR #1](https://github.com/Prajjaval08/distributed-ai-platform/pull/1)
+  to `master` is open. The only file still missing from the branch is
+  `.github/workflows/ci.yml` (403, missing workflow permission for the
+  Muse GitHub App). Add it, then merge the PR.
 - **Docker run not verified here:** this environment has no Docker and
   Maven Central downloads failed through its proxy, so no image build,
   compose run, or Maven compile was proven in this pass. First run on a
   Docker host must be the one-command setup above, then the health
-  endpoints and a job-submission smoke test.
-- **Known runtime gaps (unchanged):** replica failover and Redis
-  fail-open (see `docs/failure-testing.md`), priority fairness, worker
-  parallelism, transactional outbox, idempotency cleanup, and wiring
-  the real OpenAI provider. They are listed with file names in that
-  document rather than guessed at here.
+  endpoints and a job-submission smoke test — including a Redis-down
+  check for the RateLimiter fix in this pass.
+- **Known runtime gaps:** replica failover is still open (see the
+  Project Status section above for why it was left unchanged),
+  plus priority fairness, worker parallelism, transactional outbox,
+  idempotency cleanup, and wiring the real OpenAI provider. They are
+  listed with file names in that section rather than guessed at here.
