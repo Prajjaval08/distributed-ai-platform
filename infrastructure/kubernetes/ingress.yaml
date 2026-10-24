@@ -1,0 +1,25 @@
+# Ingress for the API. Requires an ingress controller (e.g. ingress-nginx)
+# in the cluster. Replace the host with your real demo domain, and add a
+# TLS section (cert-manager or your provider's certificate) before exposing
+# this publicly — this manifest deliberately ships without TLS so no
+# certificate reference is invented here.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-ingress
+  namespace: ai-platform
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: ai-platform.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-service
+                port:
+                  number: 80
