@@ -1,0 +1,26 @@
+# Cluster-internal Services. The worker Service is not for user traffic —
+# it exists so Prometheus (and operators) can scrape worker health/metrics
+# on port 8081. User traffic goes through the Ingress to api-service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service
+  namespace: ai-platform
+spec:
+  selector:
+    app: api-service
+  ports:
+    - port: 80
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker-service
+  namespace: ai-platform
+spec:
+  selector:
+    app: worker-service
+  ports:
+    - port: 8081
+      targetPort: http

@@ -22,6 +22,12 @@
     <name>api-service</name>
     <description>Distributed AI Inference Platform - API Service</description>
 
+    <!-- Phase 22: pin Java 21, matching worker-service and the Docker images.
+         (The Spring Boot parent defaults to 17 when this is absent.) -->
+    <properties>
+        <java.version>21</java.version>
+    </properties>
+
 
     <!-- ========================================================= -->
     <!-- Dependency Management -->

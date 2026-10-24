@@ -568,3 +568,82 @@ commit the README and update the todo list step statuses,
 or run docker compose up locally and capture first-start logs (you must confirm).
 
 File: services/api-service/src/main/resources/db/migration/V2__create_jobs_table.sql
+## Phase 22–25 status (October 2025 pass)
+
+Architecture is unchanged from the sections above: client → Nginx →
+API → Kafka → workers → object storage, with PostgreSQL as the system of
+record, Redis as a short-lived cache, and Prometheus/Grafana/Jaeger for
+observability. The API docs summary is the "Verified API Endpoints"
+table above (register, login, submit job → 202, get job, cancel job,
+get result, get current user).
+
+### One-command local setup (Phase 22)
+
+```bash
+# From the repository root. Defaults in docker-compose.yml cover local
+# dev, so the stack starts even without a .env file; copy one anyway to
+# set your own database/JWT secrets for any shared use.
+cp .env.example infrastructure/docker/.env
+docker compose -f infrastructure/docker/docker-compose.yml up --build
+```
+
+Then: API on http://localhost:8080 (also via Nginx on port 80), worker
+health on http://localhost:8081/actuator/health, Jaeger on
+http://localhost:16686, Grafana on http://localhost:3000.
+Note: the header comment in `docker-compose.yml` says to copy
+`.env.example` to the repository root; Compose actually loads `.env`
+from the compose file's directory (`infrastructure/docker/`), so the
+command above is the form that is picked up automatically. The
+repository-root copy is harmless but is not what Compose reads.
+
+Services are built from multi-stage Dockerfiles
+(`services/api-service/Dockerfile`, `services/worker-service/Dockerfile`:
+Maven + JDK 21 build, slim JRE 21 runtime, non-root user) with the
+committed OpenTelemetry agent jar (2.31.1) attached via
+`JAVA_TOOL_OPTIONS`. Health checks hit `/actuator/health`.
+
+### Phase 23 — CI/CD
+
+`.github/workflows/ci.yml` builds and tests both services on every pull
+request and push to `master` (Java 21, Maven; the Testcontainers
+PostgreSQL integration test runs on GitHub-hosted runners, which provide
+Docker). Any test failure fails the pipeline. On pushes to `master`
+only, tested images are pushed to GHCR tagged with the full commit SHA:
+`ghcr.io/prajjaval08/distributed-ai-platform-api-service:<sha>` and
+`...-worker-service:<sha>`.
+
+### Phase 25 — Kubernetes
+
+Manifests live in `infrastructure/kubernetes/` (Deployments, Services,
+ConfigMaps, placeholder-only Secrets, Ingress, worker HPA, plus a
+kustomization). See `infrastructure/kubernetes/README.md` first: the
+manifests deploy only the two stateless services and assume PostgreSQL,
+Redis, Kafka, MinIO, and Jaeger already exist as Services. Workers scale
+on CPU (2–10 replicas); Kafka-lag scaling is documented in
+`worker-hpa.yaml` but not wired (it needs a lag exporter +
+prometheus-adapter). These manifests have been YAML-checked but not
+applied to a cluster.
+
+### Phase 24 — Cloud deployment
+
+Not provisioned. The concrete plan is in `docs/cloud-deployment.md`
+(provider approach, managed Postgres/Kafka/object storage, secrets, env
+vars, and the smoke-test steps for a public demo URL). No resources,
+accounts, or spending were created in this pass.
+
+### Remaining blockers (not hidden)
+
+- **GitHub write access:** the Muse GitHub App can read this public
+  repository but not write to it (403 on branch creation), so nothing
+  in this pass is pushed. Grant the app write access, then push branch
+  `phase-22-docker` and open a pull request to `master`.
+- **Docker run not verified here:** this environment has no Docker and
+  Maven Central downloads failed through its proxy, so no image build,
+  compose run, or Maven compile was proven in this pass. First run on a
+  Docker host must be the one-command setup above, then the health
+  endpoints and a job-submission smoke test.
+- **Known runtime gaps (unchanged):** replica failover and Redis
+  fail-open (see `docs/failure-testing.md`), priority fairness, worker
+  parallelism, transactional outbox, idempotency cleanup, and wiring
+  the real OpenAI provider. They are listed with file names in that
+  document rather than guessed at here.

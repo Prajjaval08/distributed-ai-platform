@@ -1,3 +1,13 @@
+# Phase 22 — production-like local stack.
+# From this directory, copy ../../.env.example to ../../.env first
+# (placeholders only; replace them for any shared environment), then run:
+#   docker compose up --build
+# The API is then on http://localhost:8080 (also via nginx on port 80),
+# the worker health endpoint on http://localhost:8081/actuator/health,
+# Jaeger on http://localhost:16686 and Grafana on http://localhost:3000.
+# Service images are built from the repository root so the committed
+# OpenTelemetry agent jar can be copied into them; see the Dockerfiles.
+
 services:
   jaeger:
     image: jaegertracing/all-in-one:1.60
@@ -241,6 +251,121 @@ services:
       "
 
 
+  api-service:
+    build:
+      context: ../..
+      dockerfile: services/api-service/Dockerfile
+    image: distributed-ai-platform-api-service:latest
+    container_name: ai-platform-api-service
+    restart: unless-stopped
+
+    ports:
+      - "8080:8080"
+
+    environment:
+      SERVER_PORT: "8080"
+      DB_URL: jdbc:postgresql://postgres:5432/ai_platform
+      REPLICA_DB_URL: jdbc:postgresql://postgres-replica:5432/ai_platform
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_JOB_CACHE_TTL_SECONDS: ${REDIS_JOB_CACHE_TTL_SECONDS:-60}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC_AI_JOBS: ${KAFKA_TOPIC_AI_JOBS:-ai-jobs}
+      KAFKA_TOPIC_AI_JOBS_HIGH: ${KAFKA_TOPIC_AI_JOBS_HIGH:-ai-jobs-high}
+      KAFKA_TOPIC_AI_JOBS_LOW: ${KAFKA_TOPIC_AI_JOBS_LOW:-ai-jobs-low}
+      OBJECT_STORAGE_ENDPOINT: http://minio:9000
+      OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:-ai-platform-artifacts}
+      OBJECT_STORAGE_ACCESS_KEY: ${OBJECT_STORAGE_ACCESS_KEY:-minioadmin}
+      OBJECT_STORAGE_SECRET_KEY: ${OBJECT_STORAGE_SECRET_KEY:-minioadmin}
+      JWT_SECRET: ${JWT_SECRET:-local-dev-only-secret-please-change-me-32chars-min}
+      JWT_EXPIRATION_MS: ${JWT_EXPIRATION_MS:-900000}
+      RATE_LIMIT_JOBS_PER_HOUR: ${RATE_LIMIT_JOBS_PER_HOUR:-100}
+      RATE_LIMIT_AUTH_PER_HOUR: ${RATE_LIMIT_AUTH_PER_HOUR:-10}
+      AI_PROVIDER_TYPE: ${AI_PROVIDER_TYPE:-mock}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      OTEL_SERVICE_NAME: api-service
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      postgres-replica:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      jaeger:
+        condition: service_started
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+
+  worker-service:
+    build:
+      context: ../..
+      dockerfile: services/worker-service/Dockerfile
+    image: distributed-ai-platform-worker-service:latest
+    container_name: ai-platform-worker-service
+    restart: unless-stopped
+
+    ports:
+      - "8081:8081"
+
+    environment:
+      # NOTE: worker-service application.yml hardcodes server.port 8081, so
+      # this service is deliberately mapped 8081:8081 and not re-ported here.
+      DB_URL: jdbc:postgresql://postgres:5432/ai_platform
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_JOB_CACHE_TTL_SECONDS: ${REDIS_JOB_CACHE_TTL_SECONDS:-60}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC_AI_JOBS: ${KAFKA_TOPIC_AI_JOBS:-ai-jobs}
+      KAFKA_TOPIC_AI_JOBS_HIGH: ${KAFKA_TOPIC_AI_JOBS_HIGH:-ai-jobs-high}
+      KAFKA_TOPIC_AI_JOBS_LOW: ${KAFKA_TOPIC_AI_JOBS_LOW:-ai-jobs-low}
+      KAFKA_TOPIC_AI_JOBS_DLQ: ${KAFKA_TOPIC_AI_JOBS_DLQ:-ai-jobs-dlq}
+      OBJECT_STORAGE_ENDPOINT: http://minio:9000
+      OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:-ai-platform-artifacts}
+      OBJECT_STORAGE_ACCESS_KEY: ${OBJECT_STORAGE_ACCESS_KEY:-minioadmin}
+      OBJECT_STORAGE_SECRET_KEY: ${OBJECT_STORAGE_SECRET_KEY:-minioadmin}
+      AI_PROVIDER_TYPE: ${AI_PROVIDER_TYPE:-mock}
+      AI_PROVIDER_TIMEOUT_SECONDS: ${AI_PROVIDER_TIMEOUT_SECONDS:-10}
+      OBJECT_STORAGE_TIMEOUT_SECONDS: ${OBJECT_STORAGE_TIMEOUT_SECONDS:-5}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      OTEL_SERVICE_NAME: worker-service
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      jaeger:
+        condition: service_started
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+
   nginx:
     image: nginx:1.27-alpine
     container_name: ai-platform-nginx
@@ -252,8 +377,9 @@ services:
     volumes:
       - ../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
 
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    depends_on:
+      api-service:
+        condition: service_healthy
 
 
   prometheus:
@@ -267,9 +393,6 @@ services:
     volumes:
       - ../../monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
-
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
 
   grafana:

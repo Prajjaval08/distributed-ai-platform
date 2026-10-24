@@ -1,0 +1,60 @@
+# Non-secret configuration for the API and worker services.
+# Every key here is an environment-variable name the services already read
+# from their application.yml placeholders (see services/*/src/main/resources/
+# application.yml). Values are the in-cluster hostnames for the stateful
+# services; see README.md in this directory for what must exist first.
+# Secrets (passwords, JWT secret, storage keys) live in secret.yaml, not here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-platform-api-config
+  namespace: ai-platform
+data:
+  SERVER_PORT: "8080"
+  DB_URL: "jdbc:postgresql://postgres:5432/ai_platform"
+  REPLICA_DB_URL: "jdbc:postgresql://postgres-replica:5432/ai_platform"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  REDIS_JOB_CACHE_TTL_SECONDS: "60"
+  KAFKA_BOOTSTRAP_SERVERS: "kafka:29092"
+  KAFKA_TOPIC_AI_JOBS: "ai-jobs"
+  KAFKA_TOPIC_AI_JOBS_HIGH: "ai-jobs-high"
+  KAFKA_TOPIC_AI_JOBS_LOW: "ai-jobs-low"
+  OBJECT_STORAGE_ENDPOINT: "http://minio:9000"
+  OBJECT_STORAGE_BUCKET: "ai-platform-artifacts"
+  OBJECT_STORAGE_REGION: "us-east-1"
+  AI_PROVIDER_TYPE: "mock"
+  AI_PROVIDER_URL: "https://api.openai.com/v1"
+  AI_PROVIDER_MODEL: "dall-e-3"
+  RATE_LIMIT_JOBS_PER_HOUR: "100"
+  RATE_LIMIT_AUTH_PER_HOUR: "10"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4317"
+  OTEL_SERVICE_NAME: "api-service"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-platform-worker-config
+  namespace: ai-platform
+data:
+  # Note: worker-service hardcodes server.port 8081 in its application.yml,
+  # so no SERVER_PORT is set here (matching the Compose setup).
+  DB_URL: "jdbc:postgresql://postgres:5432/ai_platform"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  REDIS_JOB_CACHE_TTL_SECONDS: "60"
+  KAFKA_BOOTSTRAP_SERVERS: "kafka:29092"
+  KAFKA_TOPIC_AI_JOBS: "ai-jobs"
+  KAFKA_TOPIC_AI_JOBS_HIGH: "ai-jobs-high"
+  KAFKA_TOPIC_AI_JOBS_LOW: "ai-jobs-low"
+  KAFKA_TOPIC_AI_JOBS_DLQ: "ai-jobs-dlq"
+  OBJECT_STORAGE_ENDPOINT: "http://minio:9000"
+  OBJECT_STORAGE_BUCKET: "ai-platform-artifacts"
+  OBJECT_STORAGE_REGION: "us-east-1"
+  AI_PROVIDER_TYPE: "mock"
+  AI_PROVIDER_URL: "https://api.openai.com/v1"
+  AI_PROVIDER_MODEL: "dall-e-3"
+  AI_PROVIDER_TIMEOUT_SECONDS: "10"
+  OBJECT_STORAGE_TIMEOUT_SECONDS: "5"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4317"
+  OTEL_SERVICE_NAME: "worker-service"

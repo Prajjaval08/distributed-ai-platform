@@ -105,17 +105,6 @@ public class GlobalExceptionHandler {
                 ));
     }
 
-    @ExceptionHandler(JobNotProcessableException.class)
-    public ResponseEntity<ErrorResponse> handleJobNotProcessable(
-            JobNotProcessableException ex) {
-
-        return ResponseEntity.status(HttpStatus.CONFLICT)
-                .body(withLoggedCode(
-                        "JOB_NOT_PROCESSABLE",
-                        ex.getMessage()
-                ));
-    }
-
     @ExceptionHandler(JobResultNotReadyException.class)
     public ResponseEntity<ErrorResponse> handleResultNotReady(
             JobResultNotReadyException ex) {
