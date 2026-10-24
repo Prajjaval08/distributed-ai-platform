@@ -1,0 +1,10 @@
+# Keep the Docker build context small. The OpenTelemetry agent jar at the
+# repo root is deliberately NOT ignored: the service Dockerfiles copy it in.
+.git
+.gitignore
+**/target/
+**/*.log
+.env
+.idea/
+.vscode/
+.DS_Store
